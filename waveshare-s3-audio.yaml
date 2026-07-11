@@ -1,7 +1,15 @@
 substitutions:
-  device_name: esp32-audio-s3
-  friendly: Waveshare-Audio-3
-  
+  device_name: ha-voice-office
+  friendly: HA-Voice-Office
+
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+  api_key: !secret api_key
+
+  wake_cutoff_slight: "250"     # ~0.98
+  wake_cutoff_moderate: "245"   # ~0.96
+  wake_cutoff_very: "222"       # ~0.87
+
   # Phases of the Voice Assistant
   voice_assist_idle_phase_id: '1' # ready to be triggered by a wake word
   voice_assist_waiting_for_command_phase_id: '2' # waiting for a voice command (after being triggered by the wake word)
@@ -116,9 +124,14 @@ esp32:
 
 wifi:
   id: wifi_id
-  fast_connect: ${hidden_ssid}
+  fast_connect: "true"
+  ssid: $wifi_ssid
+  password: $wifi_password
+  output_power: 20
+  post_connect_roaming: false
   power_save_mode: none  # Disable power saving for better performance
   reboot_timeout: 10min  # Prevent unnecessary reboots
+  domain: ".lan"          # Change from default .local
   on_connect:
     - lambda: id(improv_ble_in_progress) = false;
     - script.execute: control_leds
@@ -178,12 +191,16 @@ api:
   on_client_disconnected:
     - script.execute: control_leds
 
+  encryption:
+    key: $api_key
+
 # http_request: 
 #   verify_ssl: false
 
 ota:
   - platform: esphome
     id: ota_esphome
+    password: ota_password
 
 i2c:
   - id: internal_i2c
@@ -291,6 +308,16 @@ external_components:
       url: "https://github.com/sw3Dan/waveshare-s2-audio_esphome_voice"
       ref: main
     components: [ es8311 ]
+    refresh: 0s
+
+# get TaterTotterson micro_wake_word code that uploads Wake Word samples
+  - source:
+      type: git
+      url: https://github.com/TaterTotterson/microWakeWords
+      ref: main
+      path: shared/components
+    components:
+      - micro_wake_word
     refresh: 0s
 
 audio_dac:
@@ -462,9 +489,24 @@ voice_assistant:
         then:
           - switch.turn_off: mic_mute_switch
     - lambda: id(init_in_progress) = false;
-    - micro_wake_word.start:
+    - lambda: |-
+        id(mww).set_capture_upload_enabled(id(capture_wake_audio).state);
+        id(mww).set_capture_close_misses_enabled(id(capture_close_misses).state);
+        id(mww).set_capture_close_miss_probability_cutoff(id(close_miss_threshold).state);
+        id(mww).set_detection_profile(id(wake_word_profile).state);
+        if (id(wake_word_sensitivity).current_option() == "Slightly sensitive") {
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_slight});
+        } else if (id(wake_word_sensitivity).current_option() == "Moderately sensitive") {
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_moderate});
+        } else if (id(wake_word_sensitivity).current_option() == "Very sensitive") {
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_very});
+        }
+        id(mww).set_capture_upload_url(id(trainer_app_url).state);
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - micro_wake_word.start:
     - script.execute: control_leds
+    - safe_mode.mark_successful		# tater micro_wake_word won't start until successful boot
+
   on_client_disconnected:
     - voice_assistant.stop:
     - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
@@ -605,20 +647,24 @@ micro_wake_word:
     #gain_factor: 4
   stop_after_detection: false
   models:
-    - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
+    - model: /config/www/WakeWord/hey_leeahona.json
+      probability_cutoff: 0.999 # json has 0.77
+      id: hey_leeahona
+
+#    - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
       #probability_cutoff: 0.03 # 0.8
-      id: okay_nabu
-    - model: https://raw.githubusercontent.com/formatBCE/Respeaker-Lite-ESPHome-integration/refs/heads/main/microwakeword/models/v2/kenobi.json
-      id: kenobi
+#      id: okay_nabu
     - model: hey_jarvis
       id: hey_jarvis
-    #- model: hey_mycroft
-    #  id: hey_mycroft
     - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
       id: stop
       internal: true #false
+#    - model: hey_mycroft
+#      id: hey_mycroft
+#    - model: https://raw.githubusercontent.com/formatBCE/Respeaker-Lite-ESPHome-integration/refs/heads/main/microwakeword/models/v2/kenobi.json
+#      id: kenobi
   vad:
-    probability_cutoff: 0.03 #0.03
+    probability_cutoff: 0.03 # default 0.5
   on_wake_word_detected:
     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
     - if:
@@ -776,14 +822,15 @@ script:
           const bool improv_ble     = id(improv_ble_in_progress);
           const bool init_progress  = id(init_in_progress);
           const int  phase          = id(voice_assistant_phase);
+          const bool mic_mute       = id(mic_is_muted);
 
           // Refresh timer cache sparsely when needed
           id(check_if_timers_active).execute();
           const bool timers_active = id(is_timer_active);
 
           ESP_LOGD("led",
-                   "control_leds: wifi=%d api=%d improv=%d init=%d ringing=%d timers_active=%d phase=%d",
-                   (int)wifi_connected, (int)api_connected, (int)improv_ble, (int)init_progress,
+                   "control_leds: wifi=%d api=%d improv=%d init=%d ringing=%d timers_active=%d phase=%d mic_mute=%d",
+                   (int)wifi_connected, (int)api_connected, (int)improv_ble, (int)init_progress, (int)mic_mute,
                    (int)ringing, (int)timers_active, phase);
 
           auto set = [&](const char* effect, float r, float g, float b) {
@@ -831,7 +878,11 @@ script:
               return;
             default: break;
           }
-
+          if (mic_mute)
+          {
+            set("Pulse Medium", 1.0, 0.5, 0.0); 
+            return;
+          }
           // Timers ticking (no bar, minimal footprint)
           if (timers_active) {
             set("Pulse Slow", 0.6, 0.0, 0.6);
@@ -1025,6 +1076,7 @@ script:
 select:
   - platform: template
     name: "Wake word sensitivity"
+    id: wake_word_sensitivity
     optimistic: true
     initial_option: Slightly sensitive
     restore_value: true
@@ -1040,18 +1092,11 @@ select:
       # These cutoffs apply only to the specific models included in the firmware: okay_nabu@20241226.3, hey_jarvis@v2, hey_mycroft@v2
       lambda: |-
         if (x == "Slightly sensitive") {
-          id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)
-          //id(hey_jarvis).set_probability_cutoff(247);   // 0.97 -> 0.563 FAPH on DipCo (Manifest's default)
-          //id(hey_mycroft).set_probability_cutoff(253);  // 0.99 -> 0.567 FAPH on DipCo
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_slight});
         } else if (x == "Moderately sensitive") {
-          id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
-          //id(hey_jarvis).set_probability_cutoff(235);   // 0.92 -> 0.939 FAPH on DipCo
-          //id(hey_mycroft).set_probability_cutoff(242);  // 0.95 -> 1.502 FAPH on DipCo (Manifest's default)
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_moderate});
         } else if (x == "Very sensitive") {
-          id(okay_nabu).set_probability_cutoff(50);
-          //id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
-          //id(hey_jarvis).set_probability_cutoff(212);   // 0.83 -> 1.502 FAPH on DipCo
-          //id(hey_mycroft).set_probability_cutoff(237);  // 0.93 -> 1.878 FAPH on DipCo
+          id(mww).set_wake_word_probability_cutoff(${wake_cutoff_very});
         }
   - platform: logger
     id: logger_select
@@ -1072,6 +1117,21 @@ select:
         - lambda: |-
             id(saved_alarm_action) = x;
 
+  - platform: template
+    name: "Wake word profile"
+    id: wake_word_profile
+    icon: "mdi:tune-variant"
+    optimistic: true
+    initial_option: Balanced
+    restore_value: true
+    entity_category: config
+    options:
+      - Very sensitive
+      - Balanced
+      - Strict
+      - TV nearby
+    on_value:
+      lambda: id(mww).set_detection_profile(x);
 
 switch:
   - platform: template  #TODO: make react live
@@ -1103,12 +1163,12 @@ switch:
           id(mic_is_muted) = true;
           // "Mute" by dropping gain to 0 dB (effectively off for many capsules)
           id(adc_mic).set_mic_gain(0.0f);
-      - script.execute: flash_ring
+      - script.execute: control_leds
     turn_off_action:
       - lambda: |-
           id(mic_is_muted) = false;
           id(adc_mic).set_mic_gain(id(mic_gain_saved));
-      - script.execute: flash_ring
+      - script.execute: control_leds
 
   - platform: template
     id: mute_sound
@@ -1167,7 +1227,59 @@ switch:
     on_turn_off:
       - script.execute: control_leds
 
+  - platform: template
+    id: capture_wake_audio
+    name: Capture Wake Audio
+    icon: mdi:waveform
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: id(mww).set_capture_upload_enabled(true);
+    turn_off_action:
+      - lambda: id(mww).set_capture_upload_enabled(false);
+
+  - platform: template
+    id: capture_close_misses
+    name: Capture Close Misses
+    icon: mdi:target
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: id(mww).set_capture_close_misses_enabled(true);
+    turn_off_action:
+      - lambda: id(mww).set_capture_close_misses_enabled(false);
+
+text:
+  - platform: template
+    id: trainer_app_url
+    name: Trainer App URL
+    icon: mdi:lan-connect
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: "http://QtMain:8789"
+    mode: TEXT
+    max_length: 255
+    set_action:
+      - lambda: id(mww).set_capture_upload_url(x);
+
 number:
+  - platform: template
+    id: close_miss_threshold
+    name: Close Miss Threshold
+    icon: "mdi:target-variant"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: 0.78
+    min_value: 0.50
+    max_value: 0.95
+    step: 0.01
+    set_action:
+      - lambda: id(mww).set_capture_close_miss_probability_cutoff(x);
+
   - platform: template # MIC DEBUG
     id: mic_gain_db
     name: "Mic Gain (ES7210 dB)"
@@ -1176,7 +1288,8 @@ number:
     max_value: 42
     step: 1
     restore_value: true
-    initial_value: 24
+    initial_value: 32
+    optimistic: true          # ← This makes it immediately reflect the set value
     set_action:
       - lambda: |-
           id(adc_mic).set_mic_gain(x);   // adjust PGA on the fly
@@ -1192,6 +1305,7 @@ number:
     step: 1
     restore_value: true
     initial_value: 32
+    optimistic: true          # ← This makes it immediately reflect the set value
     set_action:
       - lambda: |-
           id(va_mic).set_gain_factor(x);   // adjust gain factor on the fly
@@ -1208,6 +1322,7 @@ number:
     step: 1
     restore_value: true
     initial_value: 4
+    optimistic: true          # ← This makes it immediately reflect the set value
     set_action:
       - lambda: |-
           id(va).set_noise_suppression_level(x);   // adjust noise suppression on the fly
@@ -1248,6 +1363,13 @@ sensor:
     unit_of_measurement: s
     icon: "mdi:timer"
     accuracy_decimals: 0
+
+  - platform: wifi_signal
+    name: "WiFi Signal dBm"
+    id: wifi_signal_dbm
+    update_interval: 60s
+    entity_category: "diagnostic"
+    icon: "mdi:wifi"
 
 text_sensor:
   - platform: template
@@ -1296,7 +1418,16 @@ binary_sensor:
       number: 10
       inverted: true
     on_press:
-      - media_player.toggle: external_media_player
+    - if:
+        condition:
+          - switch.is_on: mic_mute_switch
+        then:
+          - switch.turn_off: mic_mute_switch
+          - script.execute: control_leds
+        else:
+          - switch.turn_on: mic_mute_switch
+          - script.execute: control_leds
+#      - media_player.toggle: external_media_player
 
   - platform: gpio
     id: key3_button
