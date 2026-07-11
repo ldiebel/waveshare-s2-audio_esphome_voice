@@ -1,3 +1,25 @@
+@sw3Dan's code has worked out very well for the waveshare ESP32-S3 AI Smart Speaker Development Board.
+I purchased 5 of these on Amazon to use as Voice Satellites with my Home Assistant.
+https://www.amazon.com/dp/B0FP5QYZM9?ref_=ppx_hzsearch_conn_dt_b_fed_asin_title_1
+
+In order to use my own custom Wake Word, I've been using @TaterTotterson's "microWakeWord Trainer Studio".
+https://taterassistant.com/install/docker.html
+
+This has worked reasonably well, but I wanted to be able to have my voice satellites upload samples.
+In order to do this I used TaterTotterson's make_wake_word cpp code component.
+
+With this addition I've been able to capture many positive samples from my wife and I and many false triggers
+from TV, radio etc.
+
+After a few rounds of processing captures and re-running microWakeWord Trainer Studio, I have a much more 
+reliable Wake Word.
+
+Thank you to @sw3Dan and @TaterTotterson for thier great work.
+Thank you also to all those involved in Home Assistant @home-assistant. 
+I'm very happy with the results and my very cool local Voice Satellites.
+
+------------------------------------------------------------------------
+
 ESPHome configuration for enabeling WAVESHARE-S3-AUDIO-BOARD (https://www.waveshare.com/esp32-s3-audio-board.htm)
 to be used as a HomeAssistant Voice Satellite. Features such as simultanious music/and announcements and
 continious on-board wake-word detection.
