@@ -1,11 +1,22 @@
 substitutions:
-  device_name: ha-voice-office
-  friendly: HA-Voice-Office
+  device_name: ha-voice-test
+  friendly: HA-Voice-Test
+  wake_word_priority: 14  # 0-255, bigger is higher priority. Only used if wake word sliding average probability is equal
+  mic_select: "right"     # "left"-mic1-MIC1P/MIC1N, "right"-mic2-MIC2P/MIC2N, "stereo"?? (viewed from the power connector side)
+                          # Office-14-R, family-10-L, Kitchen-12-R, Home1-8-R, Home2-6-R, Master-4-L, Bathroom-2-L 
 
-  wifi_ssid: !secret wifi_ssid
-  wifi_password: !secret wifi_password
-  api_key: !secret api_key
+  udp_broadcast_ip: 10.10.255.255   # subnet broadcast
+  udp_broadcast_port: 44808         # random change if it conflicts
 
+  wake1_name: "Home Assistant"
+  wake1_id:    home_assistant
+
+  wake2_name: "Hey Grok"
+  wake2_id:    hey_grok
+
+  wake1_model: /config/esphome/wakewords/$wake1_id.json
+  wake2_model: /config/esphome/wakewords/$wake2_id.json
+  
   wake_cutoff_slight: "250"     # ~0.98
   wake_cutoff_moderate: "245"   # ~0.96
   wake_cutoff_very: "222"       # ~0.87
@@ -34,10 +45,9 @@ substitutions:
   mic_channel_2: 'stereo' # voice assistant does not support stereo
 
   #WORKING
-  which_mic: 0 #0=left, 1=right, 2=stereo
   i2s_sample_rate: 16000 # Works as in sync with microphone (mic must have 16000 for voice assistant)
-  i2s_bits_per_sample: 32
-  #i2s_bits_per_sample: 16
+  #i2s_bits_per_sample: 32
+  i2s_bits_per_sample: 16
   i2s_mode_mic: secondary
   i2s_mode_speaker: secondary
   i2s_use_apll: true
@@ -47,15 +57,6 @@ substitutions:
 
   hidden_ssid: "false"
   led_num: '7' # WS2812 ring leds
-
-# Pre-configured camera code
-# exposes UI controls to Homeassistant
-# ====================================
-#packages: # REMOTE (GIT)
-#  remote_package_shorthand: github://esphome/sw3Dan/waveshare-s2-audio_esphome_voice/waveshare_camera_pkg.yaml@main
-#packages: # LOCAL FILE
-#  dynamic-cam: !include
-#    file: waveshare_camera_pkg.yaml
 
 esphome:
   name: $device_name
@@ -125,8 +126,8 @@ esp32:
 wifi:
   id: wifi_id
   fast_connect: "true"
-  ssid: $wifi_ssid
-  password: $wifi_password
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
   output_power: 20
   post_connect_roaming: false
   power_save_mode: none  # Disable power saving for better performance
@@ -146,6 +147,38 @@ debug:
 
 logger:
   level: DEBUG
+
+udp:
+  id: broadcast_udp
+  addresses:
+    - $udp_broadcast_ip          
+  port: $udp_broadcast_port      # Same port for listen + send
+
+  on_receive:
+    then:
+       - lambda: |-
+          if (data.size() != 4) 
+          {
+            ESP_LOGW("udp", "Packet size!=4: %d bytes", data.size());
+            return;
+          }
+          //ESP_LOGI("udp", "Bytes: %02X %02X %02X %02X", data[0], data[1], data[2], data[3]);
+          if ((data[0]!=0xaa) || (data[3]!=0x55))
+          {
+            ESP_LOGW("udp", "Packet check patterns incorrect");
+            return;
+          }
+          ESP_LOGI("udp", "Arb: Received Probability=%d Priority=%d", data[1], data[2]);
+          if (data[1] < id(arb_probability))
+          {
+            return;
+          }
+          id(arb_probability) = data[1];
+          if (data[2] > id(arb_priority))
+          {
+            id(arb_priority) = data[2];
+            ESP_LOGI("udp", "Arb: Highest  Probability=%d Priority=%d", id(arb_probability), id(arb_priority));
+          }
 
 api:
   id: api_id
@@ -187,12 +220,17 @@ api:
             id(saved_time_zone) = posix_time_zone;
             id(publish_current_time).execute();
   on_client_connected:
+    - lambda: |-
+        id(adc_mic).set_mic_mute(false);
+        ESP_LOGI("api", "on_client_connected: mic_mute=%d", id(adc_mic).mic_mute());
+        id(adc_mic).set_mic_gain(id(mic_gain_db).state);
+        ESP_LOGI("api", "on_client_connected: mic_gain=%.0f", id(adc_mic).mic_gain());
     - script.execute: control_leds
   on_client_disconnected:
     - script.execute: control_leds
 
   encryption:
-    key: $api_key
+    key: !secret api_key
 
 # http_request: 
 #   verify_ssl: false
@@ -200,7 +238,7 @@ api:
 ota:
   - platform: esphome
     id: ota_esphome
-    password: ota_password
+    password: !secret ota_password
 
 i2c:
   - id: internal_i2c
@@ -297,12 +335,15 @@ audio_adc:
     bits_per_sample: $i2s_bps_mic
     #bits_per_sample: "${i2s_bits_per_sample}bit"
 
-# external_components:
-#   - source:
-#       type: local
-#       path: components
-#     components: [ es8311 ]
 external_components:
+#  - source:
+#      type: local
+#      path: components
+#    components: 
+#      - es7210
+#      - micro_wake_word
+#      - es8311
+
   - source:
       type: git
       url: "https://github.com/sw3Dan/waveshare-s2-audio_esphome_voice"
@@ -310,15 +351,24 @@ external_components:
     components: [ es8311 ]
     refresh: 0s
 
-# get TaterTotterson micro_wake_word code that uploads Wake Word samples
   - source:
       type: git
-      url: https://github.com/TaterTotterson/microWakeWords
+      url: "https://github.com/ldiebel/waveshare-s2-audio_esphome_voice"
       ref: main
-      path: shared/components
     components:
+      - es7210
       - micro_wake_word
     refresh: 0s
+
+# get TaterTotterson micro_wake_word code that uploads Wake Word samples
+#  - source:
+#      type: git
+#      url: "https://github.com/TaterTotterson/microWakeWords"
+#      ref: main
+#      path: shared/components
+#    components:
+#      - micro_wake_word
+#    refresh: 0s
 
 audio_dac:
   - platform: es8311
@@ -349,7 +399,7 @@ microphone:
     use_apll: $i2s_use_apll
     mclk_multiple: $i2s_mclk_multiple
     #channel: stereo
-    channel: ${mic_channel_${which_mic}}
+    channel: $mic_select
 
 speaker:
   - platform: i2s_audio
@@ -371,7 +421,6 @@ speaker:
     mclk_multiple: $i2s_mclk_multiple
     #channel: mono #WORKS
     channel: stereo #WORKS #TEST: STREAM ERROR
-    #channel: ${mic_channel_${which_mic}}
 
   # Virtual speakers to combine the announcement and media streams together into one output
   - platform: mixer
@@ -404,30 +453,26 @@ media_player:
       speaker: announcement_resampling_speaker
       format: FLAC     # FLAC is the least processor intensive codec
       num_channels: 1  # Stereo audio is unnecessary for announcements
-      sample_rate: 48000 #Supported by Music Assistant
+#      sample_rate: 48000 #Supported by Music Assistant
+      sample_rate: 16000 #Supported by Music Assistant
+    buffer_size: 2097152 # Increase from default 1MB; try 1.5M–4M (max ~4M). Helps with network jitter / slow starts.<grok-card data-id="095a27" data-type="citation_card" data-plain-type="" ></grok-card>
     media_pipeline:
       speaker: media_resampling_speaker
       format: FLAC     # FLAC is the least processor intensive codec
       sample_rate: 48000
     on_announcement:
-      - mixer_speaker.apply_ducking:
-          id: media_mixing_input
-          decibel_reduction: 20
-          duration: 0.0s
-    on_state:
-      if:
-        condition:
-          and:
-            - switch.is_off: timer_ringing
-            - not:
-                voice_assistant.is_running:
-            - not:
-                media_player.is_announcing:
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_mixing_input
-              decibel_reduction: 0
-              duration: 1.0s
+      - lambda: |-
+          id(adc_mic).set_mic_mute(true);
+          ESP_LOGI("media_player", "on_announcement: mic_mute=%d", id(adc_mic).mic_mute());
+    on_idle:
+      - lambda: |-
+          if (!id(mic_mute_switch).state)
+          {
+            id(adc_mic).set_mic_mute(false);
+          }
+          ESP_LOGI("media_player", "on_idle: mic_mute=%d mic_mute_switch=%d", id(adc_mic).mic_mute(), id(mic_mute_switch).state);
+#    on_state:
+
     on_mute:
       - delay: 100ms  # Debounce
       - script.execute: control_leds_volume_changed
@@ -443,10 +488,23 @@ media_player:
           - script.execute: control_leds_volume_changed
     files:
       - id: timer_finished_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
-      - id: wake_word_triggered_sound
+#        file: /config/esphome/media/TTS_TimerExpired.flac
+        file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_TimerExpired.flac
+
+      - id: wake_word_triggered_sound1
+#        file: /config/esphome/media/TTS_Im_Here.flac
+        file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_Im_Here.flac
+
+      - id: wake_word_triggered_sound2
+#        file: /config/esphome/media/TTS_GrokHere.flac
+        file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_GrokHere.flac
+
+      - id: progress_sound
+#        file: /config/esphome/media/progress_sound.flac
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
+
       - id: error_cloud_expired
+#        file: /config/esphome/media/sounds_error_cloud_expired.mp3
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
 
 voice_assistant:
@@ -456,7 +514,7 @@ voice_assistant:
     microphone: i2s_mics
     #channels: 1 #Right
     #channels: 0 #Left
-    channels: $which_mic #correct that it's left/right cannel OR number of channels?
+    channels:  0 # $which_mic #correct that it's left/right channel OR number of channels?
   media_player: external_media_player
   micro_wake_word: mww
   use_wake_word: false
@@ -464,12 +522,7 @@ voice_assistant:
   auto_gain: 0 dbfs
   volume_multiplier: 1
   on_client_connected:
-    - if:
-        condition:
-          - lambda: return id(init_in_progress);
-          - switch.is_on: mic_mute_switch
-        then:
-          - switch.turn_off: mic_mute_switch
+    - switch.turn_off: mic_mute_switch
     - lambda: id(init_in_progress) = false;
     - lambda: |-
         id(mww).set_capture_upload_enabled(id(capture_wake_audio).state);
@@ -484,6 +537,8 @@ voice_assistant:
           id(mww).set_wake_word_probability_cutoff(${wake_cutoff_very});
         }
         id(mww).set_capture_upload_url(id(trainer_app_url).state);
+        ESP_LOGI("adc_mic", "on_client_connect: mic_gain=%.0f", id(adc_mic).mic_gain());
+
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - micro_wake_word.start:
     - script.execute: control_leds
@@ -515,11 +570,8 @@ voice_assistant:
               priority: true
               sound_file: !lambda return id(error_cloud_expired);
   # When the voice assistant starts: Play a wake up sound, duck audio.
-  on_start:
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 30 #20  # Number of dB quieter; higher implies more quiet, 0 implies full volume
-        duration: 0.0s         # The duration of the transition (default is no transition)
+#  on_start:
+
   on_listening:
     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
     - script.execute: control_leds
@@ -563,11 +615,7 @@ voice_assistant:
     - wait_until:
         not:
           voice_assistant.is_running:
-    # Stop ducking audio.
-    - mixer_speaker.apply_ducking:
-        id: media_mixing_input
-        decibel_reduction: 0
-        duration: 1.0s
+
     # If the end happened because of an error, let the error phase on for a second
     - if:
         condition:
@@ -625,79 +673,126 @@ micro_wake_word:
   id: mww
   microphone:
     microphone: i2s_mics
-    channels: $which_mic
+    channels: 0  # $which_mic
     #gain_factor: 4
   stop_after_detection: false
   models:
-    - model: /config/www/WakeWord/hey_leeahona.json
-      probability_cutoff: 0.999 # json has 0.77
-      id: hey_leeahona
-
-#    - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
-      #probability_cutoff: 0.03 # 0.8
-#      id: okay_nabu
+    - model: $wake1_model
+      id:    $wake1_id
+    - model: $wake2_model
+      id:    $wake2_id
     - model: hey_jarvis
       id: hey_jarvis
-    - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
+    - model: /config/esphome/wakewords/stop.json
       id: stop
       internal: true #false
-#    - model: hey_mycroft
-#      id: hey_mycroft
-#    - model: https://raw.githubusercontent.com/formatBCE/Respeaker-Lite-ESPHome-integration/refs/heads/main/microwakeword/models/v2/kenobi.json
-#      id: kenobi
   vad:
     probability_cutoff: 0.03 # default 0.5
+
   on_wake_word_detected:
-    # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
+    # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
     - if:
         condition:
-          switch.is_off: mic_mute_switch
+          switch.is_on: timer_ringing
         then:
-          # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
+          - switch.turn_off: timer_ringing
+        else:
+          # Stop voice assistant if running
           - if:
               condition:
-                switch.is_on: timer_ringing
+                voice_assistant.is_running:
               then:
-                - switch.turn_off: timer_ringing
-              # Stop voice assistant if running
+                voice_assistant.stop:
               else:
+                # Stop any other media player announcement
                 - if:
                     condition:
-                      voice_assistant.is_running:
+                      media_player.is_announcing:
                     then:
-                      voice_assistant.stop:
-                    # Stop any other media player announcement
+                      - media_player.stop:
+                          announcement: true
                     else:
+                      # Send out device arbitration udp broadcast packets to detirmine who gets to respond
+                      - lambda: 'ESP_LOGI("micro_wake_word", "on_wake_word_detected: %d ", id(mww).average_probability);'
+                      - globals.set:  # initialize received probability and priority
+                          id: arb_probability
+                          value: "0"
+                      - globals.set: 
+                          id: arb_priority
+                          value: "0"
+                      - lambda: 'ESP_LOGI("udp", "Arb: Send     Probability=%d Priority=%d", id(mww).average_probability, $wake_word_priority);'
+                      - udp.write:  # send 3 broadcasts since non-confirmed delivery and timing variances between devices
+                           id: broadcast_udp
+                           data: !lambda |-
+                            return std::vector<uint8_t>{
+                                0xaa,
+                                (uint8_t)id(mww).average_probability,
+                                (uint8_t)$wake_word_priority,
+                                0x55
+                              };
+                      - delay: 150ms  # prevent race condition
+                      - udp.write:
+                           id: broadcast_udp
+                           data: !lambda |-
+                            return std::vector<uint8_t>{
+                                0xaa,
+                                (uint8_t)id(mww).average_probability,
+                                (uint8_t)$wake_word_priority,
+                                0x55
+                              };
+                      - delay: 150ms  # allow time to receive any broadcast packetes
+                      - udp.write:
+                           id: broadcast_udp
+                           data: !lambda |-
+                            return std::vector<uint8_t>{
+                                0xaa,
+                                (uint8_t)id(mww).average_probability,
+                                (uint8_t)$wake_word_priority,
+                                0x55
+                              };
+                      # if received probability is greater than ours, we lose.
+                      # if probability is equal, check received device priority against ours
+                      - lambda: |-
+                          if (id(arb_probability) > id(mww).average_probability)
+                          {
+                            id(we_win) = false;
+                            ESP_LOGI("micro_wake_word", "Heard Probability (%d) > ours (%d)", id(arb_probability), id(mww).average_probability);
+                            return;
+                          }
+                          if ( (id(arb_probability) == id(mww).average_probability) && (id(arb_priority) > $wake_word_priority) )
+                          {
+                            id(we_win) = false;
+                            ESP_LOGI("micro_wake_word", "Heard Priority (%d) > ours (%d)", id(arb_priority), $wake_word_priority);
+                            return;
+                          }
+                          id(we_win) = true;
                       - if:
                           condition:
-                            media_player.is_announcing:
-                          then:
-                            - media_player.stop:
-                                announcement: true
-                          # Start the voice assistant and play the wake sound, if enabled
-                          else:
+                            lambda: 'return id(we_win);'
+                          then:       
+                            # Start the voice assistant and play the wake sound, if enabled
                             - if:
                                 condition:
                                   switch.is_on: wake_sound
                                 then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: !lambda return id(wake_word_triggered_sound);
+                                  - if:
+                                      condition:
+                                        lambda: 'return wake_word == "${wake2_name}";'
+                                      then:
+                                        - script.execute:
+                                            id: play_sound
+                                            priority: true
+                                            sound_file: !lambda return id(wake_word_triggered_sound2);
+                                      else:
+                                        - script.execute:
+                                            id: play_sound
+                                            priority: true
+                                            sound_file: !lambda return id(wake_word_triggered_sound1);
                                   - delay: 300ms
                             - voice_assistant.start:
                                 wake_word: !lambda return wake_word;
 
 globals:
-  - id: mic_gain_saved
-    type: float
-    restore_value: yes
-    initial_value: '32.0' #'24.0' DEBUG MIC
-  - id: mic_is_muted
-    type: bool
-    restore_value: yes
-    initial_value: 'false'
-
   - id: led_ring_color_r
     type: float
     restore_value: yes
@@ -744,7 +839,15 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
-
+  - id: arb_probability # higest wake word probability received 
+    type: uint8_t
+    initial_value: '0'
+  - id: arb_priority    # higest device priority 
+    type: uint8_t
+    initial_value: '0'
+  - id: we_win
+    type: bool
+    restore_value: no
 
 script:
   - id: flash_ring
@@ -804,16 +907,16 @@ script:
           const bool improv_ble     = id(improv_ble_in_progress);
           const bool init_progress  = id(init_in_progress);
           const int  phase          = id(voice_assistant_phase);
-          const bool mic_mute       = id(mic_is_muted);
+          //const bool mic_mute       = id(adc_mic).mic_mute();
 
           // Refresh timer cache sparsely when needed
           id(check_if_timers_active).execute();
           const bool timers_active = id(is_timer_active);
 
           ESP_LOGD("led",
-                   "control_leds: wifi=%d api=%d improv=%d init=%d ringing=%d timers_active=%d phase=%d mic_mute=%d",
-                   (int)wifi_connected, (int)api_connected, (int)improv_ble, (int)init_progress, (int)mic_mute,
-                   (int)ringing, (int)timers_active, phase);
+                   "control_leds: wifi=%d api=%d improv=%d init=%d ringing=%d timers_active=%d phase=%d mic_mute_switch=%d",
+                   (int)wifi_connected, (int)api_connected, (int)improv_ble, (int)init_progress,
+                   (int)ringing, (int)timers_active, phase, id(mic_mute_switch).state);
 
           auto set = [&](const char* effect, float r, float g, float b) {
             id(led_set_effect).execute(effect, r, g, b);
@@ -826,7 +929,7 @@ script:
           if (init_progress) {                       // Boot/init
             //if (wifi_connected) set("Pulse Fast", 0.09, 0.73, 0.95); else set("Pulse Slow", 0.09, 0.73, 0.95);
             if (wifi_connected) set("Rainbow Slow", 0.9, 0.1, 0.85); else set("Rainbow Slow", 1.0, 0.1, 0.1);
-            id(play_sound).execute(1, id(wake_word_triggered_sound)); //TEST
+            id(play_sound).execute(1, id(progress_sound)); //TEST
             return;
           }
           if (!wifi_connected || !api_connected) {   // HA disconnected
@@ -860,7 +963,7 @@ script:
               return;
             default: break;
           }
-          if (mic_mute)
+          if (id(mic_mute_switch).state)
           {
             set("Pulse Medium", 1.0, 0.5, 0.0); 
             return;
@@ -893,31 +996,10 @@ script:
   # Timer sound handling
   - id: ring_timer
     then:
-      - script.execute: enable_repeat_one
       - script.execute:
           id: play_sound
           priority: true
           sound_file: !lambda return id(timer_finished_sound);
-
-  - id: enable_repeat_one
-    then:
-      - lambda: |-
-            id(external_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
-              .set_announcement(true)
-              .perform();
-            id(external_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 500);
-
-  - id: disable_repeat
-    then:
-      - lambda: |-
-            id(external_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
-              .set_announcement(true)
-              .perform();
-            id(external_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
 
   - id: play_sound
     parameters:
@@ -1137,19 +1219,17 @@ switch:
     id: mic_mute_switch
     name: "Microphone Mute"
     icon: mdi:microphone-off
-    restore_mode: RESTORE_DEFAULT_OFF
-    lambda: |-
-      return id(mic_is_muted);
+#    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
     turn_on_action:
       - lambda: |-
-          id(mic_is_muted) = true;
-          // "Mute" by dropping gain to 0 dB (effectively off for many capsules)
-          id(adc_mic).set_mic_gain(0.0f);
+          id(adc_mic).set_mic_mute(true);
+          ESP_LOGI("mic_mute_switch", "turn_on_action: mic_mute=%d", id(adc_mic).mic_mute());
       - script.execute: control_leds
     turn_off_action:
       - lambda: |-
-          id(mic_is_muted) = false;
-          id(adc_mic).set_mic_gain(id(mic_gain_saved));
+          id(adc_mic).set_mic_mute(false);
+          ESP_LOGI("mic_mute_switch", "turn_off_action: mic_mute=%d", id(adc_mic).mic_mute());
       - script.execute: control_leds
 
   - platform: template
@@ -1175,28 +1255,31 @@ switch:
     restore_mode: ALWAYS_OFF
     on_turn_off:
       - micro_wake_word.disable_model: stop
-      - script.execute: disable_repeat
+#      - script.execute: disable_repeat
       - if:
           condition:
             media_player.is_announcing:
           then:
             media_player.stop:
               announcement: true
-      - mixer_speaker.apply_ducking:
-          id: media_mixing_input
-          decibel_reduction: 0
-          duration: 1.0s
       - script.execute: control_leds
     on_turn_on:
-      - mixer_speaker.apply_ducking:
-          id: media_mixing_input
-          decibel_reduction: 20
-          duration: 0.0s
       - micro_wake_word.enable_model: stop
-      - script.execute: ring_timer
-      - script.execute: control_leds
-      - delay: 15min
-      - switch.turn_off: timer_ringing
+      - repeat:
+          count: 5
+          then:
+            - if:
+                condition:
+                  switch.is_on: timer_ringing
+                then:
+                  - script.execute: ring_timer
+                  - delay: 5sec
+      - if:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - switch.turn_off: timer_ringing
+            - script.execute: control_leds
 
   - platform: template
     optimistic: true
@@ -1275,6 +1358,7 @@ number:
     set_action:
       - lambda: |-
           id(adc_mic).set_mic_gain(x);   // adjust PGA on the fly
+          ESP_LOGI("adc_mic", "Mic Gain: mic_gain=%.0f", id(adc_mic).mic_gain());
       - logger.log:
           format: "[MIC] Set ES7210 gain to %.0f dB"
           args: ["x"]
@@ -1335,7 +1419,6 @@ number:
 
 
 sensor:
-
   - platform: template
     id: next_timer
     name: "Next timer"

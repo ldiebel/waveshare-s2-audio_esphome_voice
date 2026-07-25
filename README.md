@@ -14,10 +14,32 @@ from TV, radio etc.
 After a few rounds of processing captures and re-running microWakeWord Trainer Studio, I have a much more 
 reliable Wake Word.
 
-Thank you to @sw3Dan and @TaterTotterson for thier great work.
+Thank you to @sw3Dan and @TaterTotterson for their great work.
 Thank you also to all those involved in Home Assistant @home-assistant. 
 I'm very happy with the results and my very cool local Voice Satellites.
 
+------------------------------------------------------------------------
+Update 2026-07-24 21:20:43
+I had a nagging problem where the device would stop part way through messages.
+It turned out to be caused by falsely picking up it's own wake word from the message being played.
+
+Reducing the mic_gain to 0 for muting was not working well enough.
+I added code to es7210 to use the hardware mute in the chip itself.
+I removed ducking, just mute or unmute.
+
+When playing the timer expired message I changed it to not use the media player repeat so we could
+mute the mic during playback, then unmute in between.
+
+With multiple devices in close proximity, the multiple responses was annoying.
+I added device arbitration using udp broadcast packets.
+When a wake word is detected the device sends three udp broadcast with the wake word probability and 
+an assigned device priority.
+It's listening for udp packets from other devices.
+If our probability is greater than any received, we win.
+If a received probability is equal to ours, we used the highest device priority to arbitrate.
+
+It works pretty well, but I'm still working on this.
+I had to make a slight change to the micro_wake_word component to provide access to the wake word probability.
 ------------------------------------------------------------------------
 
 ESPHome configuration for enabeling WAVESHARE-S3-AUDIO-BOARD (https://www.waveshare.com/esp32-s3-audio-board.htm)
