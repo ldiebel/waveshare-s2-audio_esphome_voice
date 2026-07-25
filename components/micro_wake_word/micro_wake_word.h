@@ -144,7 +144,8 @@ class MicroWakeWord : public Component
   Trigger<std::string> wake_word_detected_trigger_;
   State state_{State::STOPPED};
 
-  std::weak_ptr<RingBuffer> ring_buffer_;
+//  std::weak_ptr<RingBuffer> ring_buffer_;
+  std::weak_ptr<ring_buffer::RingBuffer> ring_buffer_;
   std::vector<WakeWordModel *> wake_word_models_;
 
 #ifdef USE_MICRO_WAKE_WORD_VAD
@@ -158,7 +159,8 @@ class MicroWakeWord : public Component
   bool stop_after_detection_;
 
   uint8_t features_step_size_;
-  std::shared_ptr<RingBuffer> capture_ring_buffer_;
+//  std::shared_ptr<RingBuffer> capture_ring_buffer_;
+  std::shared_ptr<ring_buffer::RingBuffer> capture_ring_buffer_;
   std::atomic<bool> capture_upload_enabled_{false};
   std::atomic<bool> capture_close_misses_enabled_{false};
   std::atomic<uint8_t> capture_close_miss_probability_cutoff_{200};

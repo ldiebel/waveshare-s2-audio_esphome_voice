@@ -5,8 +5,13 @@ substitutions:
   mic_select: "right"     # "left"-mic1-MIC1P/MIC1N, "right"-mic2-MIC2P/MIC2N, "stereo"?? (viewed from the power connector side)
                           # Office-14-R, family-10-L, Kitchen-12-R, Home1-8-R, Home2-6-R, Master-4-L, Bathroom-2-L 
 
-  udp_broadcast_ip: 10.10.255.255   # subnet broadcast
+  # Device arbitration delays wake word response. 
+  # Delay will be (udp_send_count-1)*udp_send_delay
+  # Set udp_send_count to 0 to disable arbitration if you're device is not in hearing proximity of other devices
+  udp_broadcast_ip: 10.10.255.255   # subnet broadcast. Depends on network mask for 255.255.255.0 use x.x.x.255
   udp_broadcast_port: 44808         # random change if it conflicts
+  udp_send_delay: "100ms"
+  udp_send_count: 5
 
   wake1_name: "Home Assistant"
   wake1_id:    home_assistant
@@ -159,26 +164,30 @@ udp:
        - lambda: |-
           if (data.size() != 4) 
           {
-            ESP_LOGW("udp", "Packet size!=4: %d bytes", data.size());
+            ESP_LOGW("udprx", "Arb: Packet size!=4: %d bytes", data.size());
             return;
           }
-          //ESP_LOGI("udp", "Bytes: %02X %02X %02X %02X", data[0], data[1], data[2], data[3]);
+          //ESP_LOGI("udprx", "Arb Bytes: %02X %02X %02X %02X", data[0], data[1], data[2], data[3]);
           if ((data[0]!=0xaa) || (data[3]!=0x55))
           {
-            ESP_LOGW("udp", "Packet check patterns incorrect");
+            ESP_LOGW("udprx", "Arb: Packet check patterns incorrect");
             return;
           }
-          ESP_LOGI("udp", "Arb: Received Probability=%d Priority=%d", data[1], data[2]);
+          ESP_LOGI("udprx", "Arb: Received Probability=%d Priority=%d", data[1], data[2]);
           if (data[1] < id(arb_probability))
           {
             return;
           }
-          id(arb_probability) = data[1];
-          if (data[2] > id(arb_priority))
+          if (data[1] == id(arb_probability))
           {
-            id(arb_priority) = data[2];
-            ESP_LOGI("udp", "Arb: Highest  Probability=%d Priority=%d", id(arb_probability), id(arb_priority));
+            if (data[2] <= id(arb_priority))
+            {
+              return;
+            }
           }
+          id(arb_probability) = data[1];
+          id(arb_priority)    = data[2];
+          ESP_LOGI("udprx", "Arb: Highest  Probability=%d Priority=%d", id(arb_probability), id(arb_priority));
 
 api:
   id: api_id
@@ -360,15 +369,15 @@ external_components:
       - micro_wake_word
     refresh: 0s
 
-# get TaterTotterson micro_wake_word code that uploads Wake Word samples
-#  - source:
-#      type: git
-#      url: "https://github.com/TaterTotterson/microWakeWords"
-#      ref: main
-#      path: shared/components
-#    components:
-#      - micro_wake_word
-#    refresh: 0s
+ get TaterTotterson micro_wake_word code that uploads Wake Word samples
+  - source:
+      type: git
+      url: "https://github.com/TaterTotterson/microWakeWords"
+      ref: main
+      path: shared/components
+    components:
+      - micro_wake_word
+    refresh: 0s
 
 audio_dac:
   - platform: es8311
@@ -528,7 +537,8 @@ voice_assistant:
         id(mww).set_capture_upload_enabled(id(capture_wake_audio).state);
         id(mww).set_capture_close_misses_enabled(id(capture_close_misses).state);
         id(mww).set_capture_close_miss_probability_cutoff(id(close_miss_threshold).state);
-        id(mww).set_detection_profile(id(wake_word_profile).state);
+        //id(mww).set_detection_profile(id(wake_word_profile).state);
+        id(mww).set_detection_profile(id(wake_word_profile).current_option());
         if (id(wake_word_sensitivity).current_option() == "Slightly sensitive") {
           id(mww).set_wake_word_probability_cutoff(${wake_cutoff_slight});
         } else if (id(wake_word_sensitivity).current_option() == "Moderately sensitive") {
@@ -690,6 +700,12 @@ micro_wake_word:
     probability_cutoff: 0.03 # default 0.5
 
   on_wake_word_detected:
+    # initialize received probability and priority as soon as possible after wake detected 
+    # so we're ready for arb packets from other devices
+    - lambda: |-
+        id(arb_probability)=0; id(arb_priority)=0;
+        ESP_LOGI("micro_wake_word", "on_wake_word_detected: %d ", id(mww).average_probability);
+
     # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
     - if:
         condition:
@@ -712,60 +728,56 @@ micro_wake_word:
                       - media_player.stop:
                           announcement: true
                     else:
-                      # Send out device arbitration udp broadcast packets to detirmine who gets to respond
-                      - lambda: 'ESP_LOGI("micro_wake_word", "on_wake_word_detected: %d ", id(mww).average_probability);'
-                      - globals.set:  # initialize received probability and priority
-                          id: arb_probability
-                          value: "0"
-                      - globals.set: 
-                          id: arb_priority
-                          value: "0"
-                      - lambda: 'ESP_LOGI("udp", "Arb: Send     Probability=%d Priority=%d", id(mww).average_probability, $wake_word_priority);'
-                      - udp.write:  # send 3 broadcasts since non-confirmed delivery and timing variances between devices
-                           id: broadcast_udp
-                           data: !lambda |-
-                            return std::vector<uint8_t>{
-                                0xaa,
-                                (uint8_t)id(mww).average_probability,
-                                (uint8_t)$wake_word_priority,
-                                0x55
-                              };
-                      - delay: 150ms  # prevent race condition
-                      - udp.write:
-                           id: broadcast_udp
-                           data: !lambda |-
-                            return std::vector<uint8_t>{
-                                0xaa,
-                                (uint8_t)id(mww).average_probability,
-                                (uint8_t)$wake_word_priority,
-                                0x55
-                              };
-                      - delay: 150ms  # allow time to receive any broadcast packetes
-                      - udp.write:
-                           id: broadcast_udp
-                           data: !lambda |-
-                            return std::vector<uint8_t>{
-                                0xaa,
-                                (uint8_t)id(mww).average_probability,
-                                (uint8_t)$wake_word_priority,
-                                0x55
-                              };
+                      # Send out device arbitration udp broadcast packets to detirmine which device wins and gets to respond
+                      - repeat:
+                          count: !lambda 'return $udp_send_count;'
+                          then:
+                            - udp.write:  # send 3 broadcasts since non-confirmed delivery and timing variances between devices
+                                id: broadcast_udp
+                                data: !lambda |-
+                                  return std::vector<uint8_t>{
+                                      0xaa,
+                                      (uint8_t)id(mww).average_probability,
+                                      (uint8_t)$wake_word_priority,
+                                      0x55
+                                    };
+                            # Delay only if this is NOT the last iteration
+                            - if:
+                                condition:
+                                  lambda: 'return iteration < ($udp_send_count-1);'
+                                then:
+                                  - delay: $udp_send_delay
+                      
+                      - lambda: |-
+                          if ($udp_send_count)
+                          {
+                            ESP_LOGI("udptx", "Arb: Sent Probability=%d Priority=%d count=%d delay=%s", 
+                            id(mww).average_probability, $wake_word_priority, $udp_send_count, "$udp_send_delay");
+                          }
+
+                      # while we've been sending, we may have received arbitration packets from other devices
                       # if received probability is greater than ours, we lose.
                       # if probability is equal, check received device priority against ours
                       - lambda: |-
+                          if (!$udp_send_count)
+                          {
+                            id(we_win) = true;
+                            return;
+                          }
+                          id(we_win) = false;
                           if (id(arb_probability) > id(mww).average_probability)
                           {
-                            id(we_win) = false;
-                            ESP_LOGI("micro_wake_word", "Heard Probability (%d) > ours (%d)", id(arb_probability), id(mww).average_probability);
+                            ESP_LOGI("micro_wake_word", "We Lose. Heard Probability (%d) > ours (%d)", id(arb_probability), id(mww).average_probability);
                             return;
                           }
                           if ( (id(arb_probability) == id(mww).average_probability) && (id(arb_priority) > $wake_word_priority) )
                           {
-                            id(we_win) = false;
-                            ESP_LOGI("micro_wake_word", "Heard Priority (%d) > ours (%d)", id(arb_priority), $wake_word_priority);
+                            ESP_LOGI("micro_wake_word", "We Lose. Heard Priority (%d) > ours (%d)", id(arb_priority), $wake_word_priority);
                             return;
                           }
                           id(we_win) = true;
+                          ESP_LOGI("micro_wake_word", "We Win! Heard Probability (%d) / ours (%d), Heard Priority (%d) / ours (%d)", 
+                            id(arb_probability), id(mww).average_probability, id(arb_priority), $wake_word_priority);
                       - if:
                           condition:
                             lambda: 'return id(we_win);'
@@ -1087,7 +1099,8 @@ script:
 
               auto time_now = id(rtc).now();
               if (time_now.hour == alarm_hour && time_now.minute == alarm_minute) {
-                auto action = id(alarm_action).state;
+                //auto action = id(alarm_action).state;
+                auto action = id(alarm_action).current_option();
                 if (action == "Play sound") {
                   id(timer_ringing).turn_on();
                 } else if (action == "Send event") {

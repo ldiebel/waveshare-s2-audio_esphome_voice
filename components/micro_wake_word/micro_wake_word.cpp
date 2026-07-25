@@ -339,7 +339,7 @@ void MicroWakeWord::setup() {
     if (this->state_ == State::STOPPED) {
       return;
     }
-    std::shared_ptr<RingBuffer> temp_ring_buffer = this->ring_buffer_.lock();
+    std::shared_ptr<ring_buffer::RingBuffer> temp_ring_buffer = this->ring_buffer_.lock();
     if (this->ring_buffer_.use_count() > 1) {
       size_t bytes_free = temp_ring_buffer->free();
 
@@ -350,7 +350,7 @@ void MicroWakeWord::setup() {
       temp_ring_buffer->write((void *) data.data(), data.size());
     }
 
-    std::shared_ptr<RingBuffer> temp_capture_ring_buffer = this->capture_ring_buffer_;
+    std::shared_ptr<ring_buffer::RingBuffer> temp_capture_ring_buffer = this->capture_ring_buffer_;
     // Keep the rolling capture buffer warm whenever detection is running so the first
     // wake after enabling uploads or reconnecting still has pre-roll audio available.
     if (temp_capture_ring_buffer != nullptr) {
@@ -396,7 +396,7 @@ void MicroWakeWord::inference_task(void *params) {
 
     if (!(xEventGroupGetBits(this_mww->event_group_) & ERROR_BITS)) {
       // Allocate ring buffer
-      std::shared_ptr<RingBuffer> temp_ring_buffer = RingBuffer::create(
+      std::shared_ptr<ring_buffer::RingBuffer> temp_ring_buffer = ring_buffer::RingBuffer::create(
           this_mww->microphone_source_->get_audio_stream_info().ms_to_bytes(RING_BUFFER_DURATION_MS));
       if (temp_ring_buffer.use_count() == 0) {
         xEventGroupSetBits(this_mww->event_group_, EventGroupBits::ERROR_MEMORY);
@@ -404,7 +404,7 @@ void MicroWakeWord::inference_task(void *params) {
       audio_buffer->set_source(temp_ring_buffer);
       this_mww->ring_buffer_ = temp_ring_buffer;
 
-      std::shared_ptr<RingBuffer> temp_capture_ring_buffer = RingBuffer::create(
+      std::shared_ptr<ring_buffer::RingBuffer> temp_capture_ring_buffer = ring_buffer::RingBuffer::create(
           this_mww->microphone_source_->get_audio_stream_info().ms_to_bytes(CAPTURE_RING_BUFFER_DURATION_MS));
       if (temp_capture_ring_buffer.use_count() == 0) {
         ESP_LOGW(TAG, "Failed to allocate captured audio ring buffer; wake audio uploads will be unavailable.");
@@ -1612,7 +1612,7 @@ std::string MicroWakeWord::build_capture_upload_url_() const {
 }
 
 bool MicroWakeWord::snapshot_capture_audio_(std::vector<uint8_t> &audio_bytes) {
-  std::shared_ptr<RingBuffer> temp_capture_ring_buffer = this->capture_ring_buffer_;
+  std::shared_ptr<ring_buffer::RingBuffer> temp_capture_ring_buffer = this->capture_ring_buffer_;
   if (temp_capture_ring_buffer == nullptr) {
     return false;
   }
