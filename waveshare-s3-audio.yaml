@@ -350,7 +350,7 @@ external_components:
 #      path: components
 #    components: 
 #      - es7210
-#      - micro_wake_word
+#      - micro_wake_word  # modified TaterTotterson micro_wake_word code that uploads Wake Word samples
 #      - es8311
 
   - source:
@@ -366,17 +366,7 @@ external_components:
       ref: main
     components:
       - es7210
-      - micro_wake_word
-    refresh: 0s
-
- get TaterTotterson micro_wake_word code that uploads Wake Word samples
-  - source:
-      type: git
-      url: "https://github.com/TaterTotterson/microWakeWords"
-      ref: main
-      path: shared/components
-    components:
-      - micro_wake_word
+      - micro_wake_word   # modified TaterTotterson micro_wake_word code that uploads Wake Word samples
     refresh: 0s
 
 audio_dac:
