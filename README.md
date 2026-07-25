@@ -29,17 +29,21 @@ I removed ducking, just mute or unmute.
 
 When playing the timer expired message I changed it to not use the media player repeat so we could
 mute the mic during playback, then unmute in between.
+This allows it to reliably catch the 'stop' wake word.
 
 With multiple devices in close proximity, the multiple responses was annoying.
 I added device arbitration using udp broadcast packets.
-When a wake word is detected the device sends three udp broadcast with the wake word probability and 
+When a wake word is detected the device sends udp broadcast packets with the wake word probability and 
 an assigned device priority.
 It's listening for udp packets from other devices.
 If our probability is greater than any received, we win.
-If a received probability is equal to ours, we used the highest device priority to arbitrate.
+If a received probability is equal to ours, we use the highest device priority to arbitrate.
 
-It works pretty well, but I'm still working on this.
 I had to make a slight change to the micro_wake_word component to provide access to the wake word probability.
+
+If anyone ends up using this and has any issues feel free to email me ld@stt.fan
+It's been a lot of fun!
+
 ------------------------------------------------------------------------
 
 ESPHome configuration for enabeling WAVESHARE-S3-AUDIO-BOARD (https://www.waveshare.com/esp32-s3-audio-board.htm)
