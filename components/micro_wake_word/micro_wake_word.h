@@ -43,7 +43,10 @@ class MicroWakeWord : public Component
 #endif
 {
  public:
-  uint8_t average_probability;
+	// LD
+  uint8_t  average_probability;
+  uint16_t average_amplitude;
+  uint16_t maximum_amplitude;
   	
   struct CaptureUploadRequest {
     MicroWakeWord *parent;
@@ -64,6 +67,10 @@ class MicroWakeWord : public Component
     std::string event_type;
     std::string detection_profile;
     std::string probability_history;
+
+    // LD - Not used but maybe someday
+		uint16_t average_amplitude;
+    uint16_t maximum_amplitude;
   };
 
   struct RuntimeModelUpdateRequest {

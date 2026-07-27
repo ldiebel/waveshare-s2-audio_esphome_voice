@@ -1636,11 +1636,62 @@ bool MicroWakeWord::snapshot_capture_audio_(std::vector<uint8_t> &audio_bytes) {
   return true;
 }
 
+
 void MicroWakeWord::queue_detection_capture_(const DetectionEvent &detection_event, DetectionEventType event_type) {
   const char *event_type_header = detection_event_type_to_header(event_type);
   if (event_type_header[0] == '\0') {
     return;
   }
+
+	// get a copy of the ring buffer so we can calc average amplitude 
+	// also ready for wake word upload
+  std::vector<uint8_t> pcm_data;
+  if (!this->snapshot_capture_audio_(pcm_data)) {
+    this->capture_upload_in_progress_.store(false);
+    ESP_LOGW(TAG,
+             "Captured wake audio upload skipped because the wake-audio ring buffer was empty. "
+             "This usually means detection started before enough audio was buffered.");
+    return;
+  }
+	int16_t  *pRaw = (int16_t *)pcm_data.data();
+	uint16_t  RawCount;
+
+	if(pcm_data.size()>131071) {
+		RawCount = 65535;
+	}
+	else {
+		RawCount = pcm_data.size()>>1;	// buffer is bytes, 16 bits/sample
+	}
+	
+//	for (uint8_t Ofs=0 ; Ofs<10; Ofs++) {
+//		ESP_LOGW(TAG, "%02x %02x %6d", pcm_data[Ofs<<1], pcm_data[(Ofs<<1)+1], pRaw[Ofs]);
+//	}
+
+	uint32_t AvgSum=0;
+	uint16_t AvgCount=0;
+	uint16_t MaxVal=0;
+
+  #define SQUELCH 20 	// ignore noise of silence
+
+	for (int16_t Ofs=0 ; Ofs<RawCount ; Ofs++) {
+		uint16_t AbsVal = std::abs(pRaw[Ofs]);
+
+		if (AbsVal>SQUELCH) {
+			AvgSum += AbsVal;
+			AvgCount++;
+		
+			if (AbsVal>MaxVal) {
+				MaxVal = AbsVal;
+			}
+		}
+	}
+
+	AvgSum /= RawCount;
+  this->average_amplitude = AvgSum;
+  this->maximum_amplitude = MaxVal;
+
+  ESP_LOGW(TAG, "RawCount=%5u AvgCount=%5u Avg=%5u Max=%5u", RawCount, AvgCount, AvgSum, MaxVal );
+
   if ((event_type == DetectionEventType::WAKE_DETECTED) && !this->capture_upload_enabled_.load()) {
     return;
   }
@@ -1657,15 +1708,6 @@ void MicroWakeWord::queue_detection_capture_(const DetectionEvent &detection_eve
   if (this->capture_upload_in_progress_.exchange(true)) {
     ESP_LOGW(TAG, "Captured wake audio upload already in progress; skipping '%s'.",
              detection_event.wake_word == nullptr ? "unknown" : detection_event.wake_word->c_str());
-    return;
-  }
-
-  std::vector<uint8_t> pcm_data;
-  if (!this->snapshot_capture_audio_(pcm_data)) {
-    this->capture_upload_in_progress_.store(false);
-    ESP_LOGW(TAG,
-             "Captured wake audio upload skipped because the wake-audio ring buffer was empty. "
-             "This usually means detection started before enough audio was buffered.");
     return;
   }
 
@@ -1688,6 +1730,10 @@ void MicroWakeWord::queue_detection_capture_(const DetectionEvent &detection_eve
   request->event_type = event_type_header;
   request->detection_profile = detection_profile_to_string(detection_event.detection_profile);
   request->probability_history = probability_history_to_header(detection_event);
+
+  // LD - Not used but maybe someday
+	request->average_amplitude = AvgSum;
+	request->maximum_amplitude = MaxVal;
 
   BaseType_t task_created = xTaskCreate(MicroWakeWord::capture_upload_task, "mww_capture_upload",
                                         CAPTURE_UPLOAD_TASK_STACK_SIZE, request, CAPTURE_UPLOAD_TASK_PRIORITY, nullptr);
@@ -1754,6 +1800,10 @@ bool MicroWakeWord::upload_capture_(const CaptureUploadRequest &request) {
   const std::string blocked_by_vad = request.blocked_by_vad ? "true" : "false";
   const std::string original_name = "wake_capture.raw";
 
+	// LD
+	const std::string average_amplitude = std::to_string(request.average_amplitude);
+	const std::string maximum_amplitude = std::to_string(request.maximum_amplitude);
+  
   esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
   esp_http_client_set_header(client, "X-Audio-Format", "pcm_s16le");
   esp_http_client_set_header(client, "X-Original-Name", original_name.c_str());
@@ -1772,6 +1822,10 @@ bool MicroWakeWord::upload_capture_(const CaptureUploadRequest &request) {
   esp_http_client_set_header(client, "X-Vad-Average-Probability", vad_average_probability.c_str());
   esp_http_client_set_header(client, "X-Detection-Profile", request.detection_profile.c_str());
   esp_http_client_set_header(client, "X-Probability-History", request.probability_history.c_str());
+
+  // LD - Not used but maybe someday
+	esp_http_client_set_header(client, "X-Average-Amplitude", average_amplitude.c_str());
+  esp_http_client_set_header(client, "X-Maximum-Amplitude", maximum_amplitude.c_str());
 
   esp_err_t err = esp_http_client_open(client, request.pcm_data.size());
   if (err != ESP_OK) {
