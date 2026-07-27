@@ -13,18 +13,19 @@ substitutions:
   udp_send_delay: "100ms"
   udp_send_count: 5
 
-  wake1_name: "Home Assistant"
-  wake1_id:    home_assistant
-
-  wake2_name: "Hey Grok"
-  wake2_id:    hey_grok
-
-  wake1_model: /config/esphome/wakewords/$wake1_id.json
-  wake2_model: /config/esphome/wakewords/$wake2_id.json
-  
   wake_cutoff_slight: "250"     # ~0.98
   wake_cutoff_moderate: "245"   # ~0.96
   wake_cutoff_very: "222"       # ~0.87
+
+  wake1_name: "Home Assistant"
+  wake1_id:    home_assistant
+#  wake1_model: /config/esphome/wakewords/$wake1_id.json #local
+  wake1_model: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/wakewords/$wake1_id.json
+
+  wake2_name: "Hey Grok"
+  wake2_id:    hey_grok
+#  wake2_model: /config/esphome/wakewords/$wake2_id.json #local
+  wake2_model: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/wakewords/$wake2_id.json
 
   # Phases of the Voice Assistant
   voice_assist_idle_phase_id: '1' # ready to be triggered by a wake word
@@ -162,32 +163,42 @@ udp:
   on_receive:
     then:
        - lambda: |-
-          if (data.size() != 4) 
+          typedef struct tagARB_PKT
           {
-            ESP_LOGW("udprx", "Arb: Packet size!=4: %d bytes", data.size());
+            uint16_t  Chk1; // aa55
+            uint8_t   AvgProb;
+            uint8_t   Priority;
+            uint16_t  AvgAmpl;
+            uint16_t  MaxAmpl;
+            uint16_t  Chk2; // 55aa
+          } ARB_PKT;
+          if (data.size() != sizeof(ARB_PKT)) 
+          {
+            ESP_LOGW("udprx", "Arb: Error: Packet size (%u): Should be %u bytes", data.size(), sizeof(ARB_PKT));
             return;
           }
-          //ESP_LOGI("udprx", "Arb Bytes: %02X %02X %02X %02X", data[0], data[1], data[2], data[3]);
-          if ((data[0]!=0xaa) || (data[3]!=0x55))
+          ARB_PKT * pArbPkt = (ARB_PKT *) data.data();
+
+          if ((pArbPkt->Chk1!=0xaa55) || (pArbPkt->Chk2!=0x55aa))
           {
-            ESP_LOGW("udprx", "Arb: Packet check patterns incorrect");
+            ESP_LOGW("udprx", "Arb: Error: Packet check patterns incorrect Chk1=%04x Chk2=%04x", pArbPkt->Chk1, pArbPkt->Chk2);
             return;
           }
-          ESP_LOGI("udprx", "Arb: Received Probability=%d Priority=%d", data[1], data[2]);
-          if (data[1] < id(arb_probability))
+          ESP_LOGI("udprx", "Arb: Amplitude=%u Priority=%u", pArbPkt->AvgAmpl, pArbPkt->Priority);
+          if (pArbPkt->AvgAmpl < id(arb_amplitude))
           {
             return;
           }
-          if (data[1] == id(arb_probability))
+          if (pArbPkt->AvgAmpl == id(arb_amplitude))
           {
-            if (data[2] <= id(arb_priority))
+            if ( pArbPkt->Priority <= id(arb_priority))
             {
               return;
             }
           }
-          id(arb_probability) = data[1];
-          id(arb_priority)    = data[2];
-          ESP_LOGI("udprx", "Arb: Highest  Probability=%d Priority=%d", id(arb_probability), id(arb_priority));
+          id(arb_amplitude) = pArbPkt->AvgAmpl;
+          id(arb_priority)  = pArbPkt->Priority;
+          ESP_LOGI("udprx", "Arb: Highest Amplitude=%u Priority=%d", id(arb_amplitude), id(arb_priority));
 
 api:
   id: api_id
@@ -345,28 +356,22 @@ audio_adc:
     #bits_per_sample: "${i2s_bits_per_sample}bit"
 
 external_components:
-#  - source:
+#  - source:    #local
 #      type: local
 #      path: components
 #    components: 
-#      - es7210
-#      - micro_wake_word  # modified TaterTotterson micro_wake_word code that uploads Wake Word samples
 #      - es8311
-
-  - source:
-      type: git
-      url: "https://github.com/sw3Dan/waveshare-s2-audio_esphome_voice"
-      ref: main
-    components: [ es8311 ]
-    refresh: 0s
+#      - es7210
+#      - micro_wake_word
 
   - source:
       type: git
       url: "https://github.com/ldiebel/waveshare-s2-audio_esphome_voice"
       ref: main
     components:
+      - es8311          #  sw3Dan's code
       - es7210
-      - micro_wake_word   # modified TaterTotterson micro_wake_word code that uploads Wake Word samples
+      - micro_wake_word # TaterTotterson micro_wake_word - added avg/max capt amplitude
     refresh: 0s
 
 audio_dac:
@@ -487,23 +492,23 @@ media_player:
           - script.execute: control_leds_volume_changed
     files:
       - id: timer_finished_sound
-#        file: /config/esphome/media/TTS_TimerExpired.flac
+#        file: /config/esphome/media/TTS_TimerExpired.flac #local
         file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_TimerExpired.flac
 
       - id: wake_word_triggered_sound1
-#        file: /config/esphome/media/TTS_Im_Here.flac
+#        file: /config/esphome/media/TTS_Im_Here.flac #local
         file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_Im_Here.flac
 
       - id: wake_word_triggered_sound2
-#        file: /config/esphome/media/TTS_GrokHere.flac
+#        file: /config/esphome/media/TTS_GrokHere.flac #local
         file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_GrokHere.flac
 
       - id: progress_sound
-#        file: /config/esphome/media/progress_sound.flac
+#        file: /config/esphome/media/progress_sound.flac #local
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
 
       - id: error_cloud_expired
-#        file: /config/esphome/media/sounds_error_cloud_expired.mp3
+#        file: /config/esphome/media/sounds_error_cloud_expired.mp3 #local
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
 
 voice_assistant:
@@ -683,7 +688,9 @@ micro_wake_word:
       id:    $wake2_id
     - model: hey_jarvis
       id: hey_jarvis
-    - model: /config/esphome/wakewords/stop.json
+
+#    - model: /config/esphome/wakewords/stop.json #local
+    - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
       id: stop
       internal: true #false
   vad:
@@ -693,8 +700,8 @@ micro_wake_word:
     # initialize received probability and priority as soon as possible after wake detected 
     # so we're ready for arb packets from other devices
     - lambda: |-
-        id(arb_probability)=0; id(arb_priority)=0;
-        ESP_LOGI("micro_wake_word", "on_wake_word_detected: %d ", id(mww).average_probability);
+        id(arb_amplitude)=0; id(arb_priority)=0;
+        ESP_LOGI("micro_wake_word", "on_wake_word_detected: Amplitude=%d ", id(mww).average_amplitude);
 
     # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
     - if:
@@ -725,12 +732,25 @@ micro_wake_word:
                             - udp.write:  # send 3 broadcasts since non-confirmed delivery and timing variances between devices
                                 id: broadcast_udp
                                 data: !lambda |-
-                                  return std::vector<uint8_t>{
-                                      0xaa,
-                                      (uint8_t)id(mww).average_probability,
-                                      (uint8_t)$wake_word_priority,
-                                      0x55
-                                    };
+                                  typedef struct tagARB_PKT
+                                  {
+                                    uint16_t  Chk1; // aa55
+                                    uint8_t   AvgProb;
+                                    uint8_t   Priority;
+                                    uint16_t  AvgAmpl;
+                                    uint16_t  MaxAmpl;
+                                    uint16_t  Chk2; // 55aa
+                                  } ARB_PKT;
+                                  std::vector<uint8_t> txdata(sizeof(ARB_PKT));
+                                  ARB_PKT * pArbPkt = (ARB_PKT *) txdata.data();
+                                  pArbPkt->Chk1 = 0xaa55;
+                                  pArbPkt->AvgProb  = id(mww).average_probability;
+                                  pArbPkt->Priority = $wake_word_priority;
+                                  pArbPkt->AvgAmpl  = id(mww).average_amplitude;
+                                  pArbPkt->MaxAmpl  = id(mww).maximum_amplitude;
+                                  pArbPkt->Chk2 = 0x55aa;
+                                  return txdata;
+
                             # Delay only if this is NOT the last iteration
                             - if:
                                 condition:
@@ -741,8 +761,8 @@ micro_wake_word:
                       - lambda: |-
                           if ($udp_send_count)
                           {
-                            ESP_LOGI("udptx", "Arb: Sent Probability=%d Priority=%d count=%d delay=%s", 
-                            id(mww).average_probability, $wake_word_priority, $udp_send_count, "$udp_send_delay");
+                            ESP_LOGI("udptx", "Arb: Sent Amplitude=%d Priority=%d count=%d delay=%s", 
+                            id(mww).average_amplitude, $wake_word_priority, $udp_send_count, "$udp_send_delay");
                           }
 
                       # while we've been sending, we may have received arbitration packets from other devices
@@ -755,19 +775,19 @@ micro_wake_word:
                             return;
                           }
                           id(we_win) = false;
-                          if (id(arb_probability) > id(mww).average_probability)
+                          if (id(arb_amplitude) > id(mww).average_amplitude)
                           {
-                            ESP_LOGI("micro_wake_word", "We Lose. Heard Probability (%d) > ours (%d)", id(arb_probability), id(mww).average_probability);
+                            ESP_LOGI("micro_wake_word", "We Lose. Heard Amplitude (%d) > ours (%d)", id(arb_amplitude), id(mww).average_amplitude);
                             return;
                           }
-                          if ( (id(arb_probability) == id(mww).average_probability) && (id(arb_priority) > $wake_word_priority) )
+                          if ( (id(arb_amplitude) == id(mww).average_amplitude) && (id(arb_priority) > $wake_word_priority) )
                           {
                             ESP_LOGI("micro_wake_word", "We Lose. Heard Priority (%d) > ours (%d)", id(arb_priority), $wake_word_priority);
                             return;
                           }
                           id(we_win) = true;
-                          ESP_LOGI("micro_wake_word", "We Win! Heard Probability (%d) / ours (%d), Heard Priority (%d) / ours (%d)", 
-                            id(arb_probability), id(mww).average_probability, id(arb_priority), $wake_word_priority);
+                          ESP_LOGI("micro_wake_word", "We Win! Heard Amplitude (%d) / ours (%d), Heard Priority (%d) / ours (%d)", 
+                            id(arb_amplitude), id(mww).average_amplitude, id(arb_priority), $wake_word_priority);
                       - if:
                           condition:
                             lambda: 'return id(we_win);'
@@ -841,7 +861,7 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
-  - id: arb_probability # higest wake word probability received 
+  - id: arb_amplitude   # higest wake word amplitude received 
     type: uint8_t
     initial_value: '0'
   - id: arb_priority    # higest device priority 
@@ -1225,14 +1245,18 @@ switch:
 #    restore_mode: RESTORE_DEFAULT_OFF
     optimistic: true
     turn_on_action:
+#      - switch.turn_on: mic_mute_switch
       - lambda: |-
+          id(mic_mute_switch).publish_state(true);   // force the new state immediately
           id(adc_mic).set_mic_mute(true);
-          ESP_LOGI("mic_mute_switch", "turn_on_action: mic_mute=%d", id(adc_mic).mic_mute());
+          ESP_LOGI("mic_mute_switch", "turn_on_action: mic_mute=%d mic_mute_switch=%d", id(adc_mic).mic_mute(), id(mic_mute_switch).state);
       - script.execute: control_leds
     turn_off_action:
+#      - switch.turn_off: mic_mute_switch
       - lambda: |-
+          id(mic_mute_switch).publish_state(false);   // force the new state immediately
           id(adc_mic).set_mic_mute(false);
-          ESP_LOGI("mic_mute_switch", "turn_off_action: mic_mute=%d", id(adc_mic).mic_mute());
+          ESP_LOGI("mic_mute_switch", "turn_off_action: mic_mute=%d mic_mute_switch=%d", id(adc_mic).mic_mute(), id(mic_mute_switch).state);
       - script.execute: control_leds
 
   - platform: template
@@ -1491,10 +1515,10 @@ binary_sensor:
           - switch.is_on: mic_mute_switch
         then:
           - switch.turn_off: mic_mute_switch
-          - script.execute: control_leds
+#          - script.execute: control_leds
         else:
           - switch.turn_on: mic_mute_switch
-          - script.execute: control_leds
+#          - script.execute: control_leds
 #      - media_player.toggle: external_media_player
 
   - platform: gpio
