@@ -491,9 +491,13 @@ media_player:
           - delay: 100ms  # Debounce
           - script.execute: control_leds_volume_changed
     files:
-      - id: timer_finished_sound
+      - id: timer_expired_sound
 #        file: /config/esphome/media/TTS_TimerExpired.flac #local
         file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_TimerExpired.flac
+
+      - id: timer_stopped_sound
+#        file: /config/esphome/media/TTS_TimerStopped.flac #local
+        file: https://github.com/ldiebel/waveshare-s2-audio_esphome_voice/raw/refs/heads/main/media/TTS_TimerStopped.flac
 
       - id: wake_word_triggered_sound1
 #        file: /config/esphome/media/TTS_Im_Here.flac #local
@@ -594,8 +598,6 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
-          # Start a script that would potentially enable the stop word if the response is longer than a second
-          - script.execute: activate_stop_word_once
   on_tts_start:
     - if:
         condition:
@@ -604,8 +606,6 @@ voice_assistant:
         then:
           - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
           - script.execute: control_leds
-          # Start a script that would potentially enable the stop word if the response is longer than a second
-          - script.execute: activate_stop_word_once
   on_tts_end:
     - script.execute:
         id: send_tts_uri_event
@@ -626,6 +626,8 @@ voice_assistant:
         condition:
           lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
         then:
+          - lambda: |
+              ESP_LOGI("voice_assistant", "on_end: voice_assistant_phase==$voice_assist_error_phase_id");
           - delay: 1s
     # Reset the voice assistant phase id and reset the LED animations.
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
@@ -1021,7 +1023,7 @@ script:
       - script.execute:
           id: play_sound
           priority: true
-          sound_file: !lambda return id(timer_finished_sound);
+          sound_file: !lambda return id(timer_expired_sound);
 
   - id: play_sound
     parameters:
@@ -1075,24 +1077,6 @@ script:
             }
           }
           id(is_timer_active) = output;
-
-  # Enable/disable the "stop" wake word around long TTS
-  - id: activate_stop_word_once
-    then:
-      - delay: 1s
-      - if:
-          condition:
-            switch.is_off: timer_ringing
-          then:
-            - micro_wake_word.enable_model: stop
-            - wait_until:
-                not:
-                  media_player.is_announcing:
-            - if:
-                condition:
-                  switch.is_off: timer_ringing
-                then:
-                  - micro_wake_word.disable_model: stop
 
   # Alarm handling + time publishing
   - id: check_alarm
@@ -1242,17 +1226,15 @@ switch:
     id: mic_mute_switch
     name: "Microphone Mute"
     icon: mdi:microphone-off
-#    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: RESTORE_DEFAULT_OFF
     optimistic: true
     turn_on_action:
-#      - switch.turn_on: mic_mute_switch
       - lambda: |-
           id(mic_mute_switch).publish_state(true);   // force the new state immediately
           id(adc_mic).set_mic_mute(true);
           ESP_LOGI("mic_mute_switch", "turn_on_action: mic_mute=%d mic_mute_switch=%d", id(adc_mic).mic_mute(), id(mic_mute_switch).state);
       - script.execute: control_leds
     turn_off_action:
-#      - switch.turn_off: mic_mute_switch
       - lambda: |-
           id(mic_mute_switch).publish_state(false);   // force the new state immediately
           id(adc_mic).set_mic_mute(false);
@@ -1282,13 +1264,16 @@ switch:
     restore_mode: ALWAYS_OFF
     on_turn_off:
       - micro_wake_word.disable_model: stop
-#      - script.execute: disable_repeat
       - if:
           condition:
             media_player.is_announcing:
           then:
             media_player.stop:
               announcement: true
+      - script.execute:
+          id: play_sound
+          priority: true
+          sound_file: !lambda return id(timer_stopped_sound);
       - script.execute: control_leds
     on_turn_on:
       - micro_wake_word.enable_model: stop
@@ -1306,6 +1291,10 @@ switch:
             switch.is_on: timer_ringing
           then:
             - switch.turn_off: timer_ringing
+            - script.execute:
+                id: play_sound
+                priority: true
+                sound_file: !lambda return id(timer_stopped_sound);
             - script.execute: control_leds
 
   - platform: template
@@ -1372,7 +1361,7 @@ number:
     set_action:
       - lambda: id(mww).set_capture_close_miss_probability_cutoff(x);
 
-  - platform: template # MIC DEBUG
+  - platform: template
     id: mic_gain_db
     name: "Mic Gain (ES7210 dB)"
     entity_category: config
@@ -1515,11 +1504,8 @@ binary_sensor:
           - switch.is_on: mic_mute_switch
         then:
           - switch.turn_off: mic_mute_switch
-#          - script.execute: control_leds
         else:
           - switch.turn_on: mic_mute_switch
-#          - script.execute: control_leds
-#      - media_player.toggle: external_media_player
 
   - platform: gpio
     id: key3_button
